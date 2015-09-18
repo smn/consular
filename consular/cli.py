@@ -61,8 +61,8 @@ def main(scheme, host, port,
     log.startLogging(logfile)
 
     consular = Consular(consul, marathon, fallback, registration_id)
-    consular.debug = debug
-    consular.timeout = timeout
+    consular.set_debug(debug)
+    consular.set_timeout(timeout)
     consular.fallback_timeout = fallback_timeout
     events_url = "%s://%s:%s/events?%s" % (
         scheme, host, port,

@@ -9,6 +9,7 @@ from twisted.internet.defer import (
 from twisted.web.client import HTTPConnectionPool
 from twisted.python import log
 
+from consular.clients import UnexpectedResponseError
 from consular.main import Consular
 
 import treq
@@ -45,7 +46,7 @@ class ConsularTest(TestCase):
             False,
             'test'
         )
-        self.consular.debug = True
+        self.consular.set_debug(True)
 
         # spin up a site so we can test it, pretty sure Klein has better
         # ways of doing this but they're not documented anywhere.
@@ -61,17 +62,17 @@ class ConsularTest(TestCase):
         # We use this to mock requests going to Consul & Marathon
         self.requests = DeferredQueue()
 
-        def mock_requests(method, url, headers, data, pool, timeout):
+        def mock_requests(method, url, **kwargs):
             d = Deferred()
             self.requests.put({
                 'method': method,
                 'url': url,
-                'data': data,
+                'data': kwargs.get('data'),
                 'deferred': d,
             })
             return d
 
-        self.patch(self.consular, 'requester', mock_requests)
+        self.consular.set_requester(mock_requests)
 
     def request(self, method, path, data=None):
         return treq.request(
@@ -316,17 +317,17 @@ class ConsularTest(TestCase):
         list_callbacks_request['deferred'].callback(
             FakeResponse(400, [], json.dumps({
                 'message':
-                'http event callback system is not running on this Marathon ' +
-                'instance. Please re-start this instance with ' +
+                'http event callback system is not running on this Marathon '
+                'instance. Please re-start this instance with '
                 '"--event_subscriber http_callback".'})))
 
-        failure = self.failureResultOf(d, RuntimeError)
+        failure = self.failureResultOf(d, UnexpectedResponseError)
         self.assertEqual(
             failure.getErrorMessage(),
-            'Unable to get existing event callbacks from Marathon: ' +
-            '\'{u\\\'message\\\': u\\\'http event callback system is not ' +
-            'running on this Marathon instance. Please re-start this ' +
-            'instance with "--event_subscriber http_callback".\\\'}\'')
+            'response: code=400, body={"message": "http event callback system '
+            'is not running on this Marathon instance. Please re-start this '
+            'instance with \\"--event_subscriber http_callback\\"."} '
+            '\nrequest: method=, url=, body=')
 
     @inlineCallbacks
     def test_sync_app_task(self):
@@ -508,11 +509,10 @@ class ConsularTest(TestCase):
         # Error is raised into a DeferredList, must get actual error
         failure = self.failureResultOf(d, FirstError)
         actual_failure = failure.value.subFailure
-        self.assertEqual(actual_failure.type, RuntimeError)
+        self.assertEqual(actual_failure.type, UnexpectedResponseError)
         self.assertEqual(
             actual_failure.getErrorMessage(),
-            'Unexpected response from Consul when getting keys for '
-            '"consular/my-app", status code = 403')
+            'response: code=403, body=None \nrequest: method=, url=, body=')
 
     @inlineCallbacks
     def test_sync_app(self):
@@ -554,6 +554,29 @@ class ConsularTest(TestCase):
         marathon_request['deferred'].callback(
             FakeResponse(200, [], json.dumps({'apps': []})))
         yield d
+
+    @inlineCallbacks
+    def test_sync_apps_field_not_found(self):
+        """
+        When syncing apps, and Marathon returns a JSON response with an
+        unexpected structure (the "apps" field is missing). A KeyError should
+        be raised with a useful message.
+        """
+        d = self.consular.sync_apps(purge=False)
+        marathon_request = yield self.requests.get()
+        self.assertEqual(marathon_request['url'],
+                         'http://localhost:8080/v2/apps')
+        self.assertEqual(marathon_request['method'], 'GET')
+        marathon_request['deferred'].callback(
+            FakeResponse(200, [], json.dumps({
+                'some field': 'that was unexpected'
+            })))
+
+        failure = self.failureResultOf(d, KeyError)
+        self.assertEqual(
+            failure.getErrorMessage(),
+            '\'Unable to get value for "apps" from Marathon response: "{"some '
+            'field": "that was unexpected"}"\'')
 
     def test_check_apps_namespace_clash_no_clash(self):
         """
@@ -731,8 +754,85 @@ class ConsularTest(TestCase):
                          'http://localhost:8080/v2/apps/testingapp/tasks')
         self.assertEqual(testingapp_request['method'], 'GET')
         testingapp_request['deferred'].callback(
-            FakeResponse(200, [], json.dumps({}))
+            FakeResponse(200, [], json.dumps({'tasks': []})))
+
+        # Expecting a service deregistering in Consul as a result. Only the
+        # task with the correct tag is returned.
+        deregister_request = yield self.requests.get()
+        self.assertEqual(
+            deregister_request['url'],
+            ('http://1.2.3.4:8500/v1/agent/service/deregister/'
+             'testingapp.someid1'))
+        self.assertEqual(deregister_request['method'], 'PUT')
+        deregister_request['deferred'].callback(
+            FakeResponse(200, [], json.dumps({})))
+        yield d
+
+    @inlineCallbacks
+    def test_purge_old_services_tasks_not_found(self):
+        """
+        Services previously registered with Consul by Consular but that no
+        longer exist in Marathon should be purged if a registration ID is set,
+        even if the tasks are not found.
+        """
+        d = self.consular.purge_dead_services()
+        consul_request = yield self.requests.get()
+        self.assertEqual(
+            consul_request['url'],
+            'http://localhost:8500/v1/catalog/nodes')
+        consul_request['deferred'].callback(
+            FakeResponse(200, [], json.dumps([{
+                'Node': 'consul-node',
+                'Address': '1.2.3.4',
+            }]))
         )
+        agent_request = yield self.requests.get()
+        # Expecting a request to list of all services in Consul, returning 3
+        # services - one tagged with our registration ID, one tagged with a
+        # different registration ID, and one with no tags.
+        self.assertEqual(
+            agent_request['url'],
+            'http://1.2.3.4:8500/v1/agent/services')
+        self.assertEqual(agent_request['method'], 'GET')
+        agent_request['deferred'].callback(
+            FakeResponse(200, [], json.dumps({
+                "testingapp.someid1": {
+                    "ID": "testingapp.someid1",
+                    "Service": "testingapp",
+                    "Tags": [
+                        "consular-reg-id=test",
+                        "consular-app-id=/testingapp",
+                    ],
+                    "Address": "machine-1",
+                    "Port": 8102
+                },
+                "testingapp.someid2": {
+                    "ID": "testingapp.someid2",
+                    "Service": "testingapp",
+                    "Tags": [
+                        "consular-reg-id=blah",
+                        "consular-app-id=/testingapp",
+                    ],
+                    "Address": "machine-2",
+                    "Port": 8103
+                },
+                "testingapp.someid3": {
+                    "ID": "testingapp.someid2",
+                    "Service": "testingapp",
+                    "Tags": None,
+                    "Address": "machine-2",
+                    "Port": 8104
+                }
+            }))
+        )
+
+        # Expecting a request for the tasks for a given app, returning a 404
+        testingapp_request = yield self.requests.get()
+        self.assertEqual(testingapp_request['url'],
+                         'http://localhost:8080/v2/apps/testingapp/tasks')
+        self.assertEqual(testingapp_request['method'], 'GET')
+        testingapp_request['deferred'].callback(
+            FakeResponse(404, [], None))
 
         # Expecting a service deregistering in Consul as a result. Only the
         # task with the correct tag is returned.
@@ -856,15 +956,14 @@ class ConsularTest(TestCase):
         # Return a 403 error
         consul_request['deferred'].callback(FakeResponse(403, [], None))
 
-        failure = self.failureResultOf(d, RuntimeError)
+        failure = self.failureResultOf(d, UnexpectedResponseError)
         self.assertEqual(
             failure.getErrorMessage(),
-            'Unexpected response from Consul when getting keys for '
-            '"consular/", status code = 403')
+            'response: code=403, body=None \nrequest: method=, url=, body=')
 
     @inlineCallbacks
     def test_fallback_to_main_consul(self):
-        self.consular.enable_fallback = True
+        self.consular.consul_client.enable_fallback = True
         self.consular.register_service(
             'http://foo:8500', '/app_id', 'service_id', 'foo', 1234)
         request = yield self.requests.get()
