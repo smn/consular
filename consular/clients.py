@@ -206,7 +206,6 @@ class ConsulClient(JsonClient):
             on an agent that cannot be reached.
         """
         super(ConsulClient, self).__init__(endpoint)
-        self.endpoint = endpoint
         self.enable_fallback = enable_fallback
 
     def register_agent_service(self, agent_endpoint, registration):
