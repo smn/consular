@@ -1,7 +1,7 @@
 import click
 import sys
 
-from urllib import urlencode
+from purl import URL
 
 
 @click.command()
@@ -64,11 +64,9 @@ def main(scheme, host, port,
     consular.set_debug(debug)
     consular.set_timeout(timeout)
     consular.fallback_timeout = fallback_timeout
-    events_url = "%s://%s:%s/events?%s" % (
-        scheme, host, port,
-        urlencode({
-            'registration': registration_id,
-        }))
+    events_url = str(
+        URL(scheme=scheme, host=host, port=port, path='/events').query_params(
+            {'registration': registration_id}))
     consular.register_marathon_event_callback(events_url)
 
     if sync_interval > 0:
