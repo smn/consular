@@ -12,7 +12,8 @@ from urllib import urlencode
 @click.option('--port', default='7000', type=int,
               help='The port to listen to.')
 @click.option('--consul', default='http://localhost:8500',
-              help='The Consul HTTP API')
+              help='The Consul HTTP API. NOTE: Other agents in the cluster '
+                   'must use the same scheme and port.')
 @click.option('--marathon', default='http://localhost:8080',
               help='The Marathon HTTP API')
 @click.option('--registration-id',

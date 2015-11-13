@@ -207,10 +207,18 @@ class ConsulClient(JsonClient):
         super(ConsulClient, self).__init__(endpoint)
         self.enable_fallback = enable_fallback
 
-    def register_agent_service(self, agent_endpoint, registration):
+    def _get_agent_endpoint(self, agent_address):
         """
-        Register a Consul service at the given agent endpoint.
+        Use the default endpoint to construct the agent endpoint from an
+        address, i.e. use the same scheme and port but swap in the address.
         """
+        return str(URL(self.endpoint).host(agent_address))
+
+    def register_agent_service(self, agent_address, registration):
+        """
+        Register a Consul service at the given agent address.
+        """
+        agent_endpoint = self._get_agent_endpoint(agent_address)
         d = self.request('PUT', '/v1/agent/service/register',
                          endpoint=agent_endpoint, json_data=registration)
 
@@ -230,10 +238,11 @@ class ConsulClient(JsonClient):
             'PUT', '/v1/agent/service/register', json_data=registration,
             timeout=self.fallback_timeout)
 
-    def deregister_agent_service(self, agent_endpoint, service_id):
+    def deregister_agent_service(self, agent_address, service_id):
         """
-        Deregister a Consul service at the given agent endpoint.
+        Deregister a Consul service at the given agent address.
         """
+        agent_endpoint = self._get_agent_endpoint(agent_address)
         return self.request('PUT', '/v1/agent/service/deregister/%s' % (
             service_id,), endpoint=agent_endpoint)
 
@@ -277,8 +286,9 @@ class ConsulClient(JsonClient):
         """
         return self.get_json('/v1/catalog/nodes')
 
-    def get_agent_services(self, agent_endpoint):
+    def get_agent_services(self, agent_address):
         """
-        Get the list of running services for the given agent endpoint.
+        Get the list of running services for the given agent address.
         """
+        agent_endpoint = self._get_agent_endpoint(agent_address)
         return self.get_json('/v1/agent/services', endpoint=agent_endpoint)
