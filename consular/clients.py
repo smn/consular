@@ -1,4 +1,3 @@
-from urllib import quote
 import json
 
 from twisted.internet import reactor
@@ -242,8 +241,7 @@ class ConsulClient(JsonClient):
         """
         Put a key/value in Consul's k/v store.
         """
-        return self.request(
-            'PUT', '/v1/kv/%s' % (quote(key),), json_data=value)
+        return self.request('PUT', '/v1/kv/%s' % key, json_data=value)
 
     def get_kv_keys(self, keys_path, separator=None):
         """
@@ -259,8 +257,7 @@ class ConsulClient(JsonClient):
         params = {'keys': ''}
         if separator:
             params['separator'] = separator
-        return self.get_json(
-            '/v1/kv/%s' % (quote(keys_path),), params=params)
+        return self.get_json('/v1/kv/%s' % keys_path, params=params)
 
     def delete_kv_keys(self, key, recurse=False):
         """
@@ -272,7 +269,7 @@ class ConsulClient(JsonClient):
             Whether or not to recursively delete all subpaths of the key.
         """
         params = {'recurse': ''} if recurse else {}
-        return self.request('DELETE', '/v1/kv/%s' % (quote(key),), params)
+        return self.request('DELETE', '/v1/kv/%s' % key, params)
 
     def get_catalog_nodes(self):
         """
