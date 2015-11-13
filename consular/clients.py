@@ -1,4 +1,4 @@
-from urllib import quote, urlencode
+from urllib import quote
 import json
 
 from twisted.internet import reactor
@@ -8,6 +8,8 @@ from twisted.web.http import OK
 
 # Twisted's default HTTP11 client factory is way too verbose
 client._HTTP11ClientFactory.noisy = False
+
+from purl import URL
 
 import treq
 
@@ -34,7 +36,8 @@ class JsonClient(object):
         log.err(failure, 'Error performing request to %s' % (url,))
         return failure
 
-    def request(self, method, path, endpoint=None, json_data=None, **kwargs):
+    def request(self, method, path, params={}, endpoint=None, json_data=None,
+                **kwargs):
         """
         Perform a request. A number of basic defaults are set on the request
         that make using a JSON API easier. These defaults can be overridden by
@@ -43,8 +46,9 @@ class JsonClient(object):
         :param: method:
             The HTTP method to use (example is `GET`).
         :param: path:
-            The URL path. This is appended to the endpoint and should start
-            with a '/' (example is `/v2/apps`).
+            The URL path (example is `/v2/apps`).
+        :param: params:
+            The URL query parameters as a dict.
         :param: endpoint:
             The URL endpoint to use. The default value is the endpoint this
             client was created with (`self.endpoint`) (example is
@@ -56,7 +60,8 @@ class JsonClient(object):
             Any other parameters that will be passed to `treq.request`, for
             example headers or parameters.
         """
-        url = ('%s%s' % (endpoint or self.endpoint, path)).encode('utf-8')
+        url = str(
+            URL(endpoint or self.endpoint).path(path).query_params(params))
 
         data = json.dumps(json_data) if json_data else None
         requester_kwargs = {
@@ -158,9 +163,10 @@ class MarathonClient(JsonClient):
         Post a new Marathon event subscription with the given callback URL.
         """
         d = self.request(
-            'POST', '/v2/eventSubscriptions?%s' % urlencode({
-                'callbackUrl': callback_url,
-            }))
+            'POST',
+            '/v2/eventSubscriptions',
+            {'callbackUrl': callback_url}
+        )
         return d.addCallback(lambda response: response.code == OK)
 
     def get_apps(self):
@@ -255,7 +261,7 @@ class ConsulClient(JsonClient):
         if separator:
             params['separator'] = separator
         return self.get_json(
-            '/v1/kv/%s?%s' % (quote(keys_path), urlencode(params),))
+            '/v1/kv/%s' % (quote(keys_path),), params=params)
 
     def delete_kv_keys(self, key, recurse=False):
         """
@@ -266,8 +272,8 @@ class ConsulClient(JsonClient):
         :param: recurse:
             Whether or not to recursively delete all subpaths of the key.
         """
-        return self.request('DELETE', '/v1/kv/%s%s' % (
-            quote(key), '?recurse' if recurse else '',))
+        params = {'recurse': ''} if recurse else {}
+        return self.request('DELETE', '/v1/kv/%s' % (quote(key),), params)
 
     def get_catalog_nodes(self):
         """
