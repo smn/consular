@@ -1,4 +1,3 @@
-from urllib import quote, urlencode
 import json
 
 from twisted.internet import reactor
@@ -8,6 +7,8 @@ from twisted.web.http import OK
 
 # Twisted's default HTTP11 client factory is way too verbose
 client._HTTP11ClientFactory.noisy = False
+
+from purl import URL
 
 import treq
 
@@ -34,7 +35,8 @@ class JsonClient(object):
         log.err(failure, 'Error performing request to %s' % (url,))
         return failure
 
-    def request(self, method, path, endpoint=None, json_data=None, **kwargs):
+    def request(self, method, path, params={}, endpoint=None, json_data=None,
+                **kwargs):
         """
         Perform a request. A number of basic defaults are set on the request
         that make using a JSON API easier. These defaults can be overridden by
@@ -43,8 +45,9 @@ class JsonClient(object):
         :param: method:
             The HTTP method to use (example is `GET`).
         :param: path:
-            The URL path. This is appended to the endpoint and should start
-            with a '/' (example is `/v2/apps`).
+            The URL path (example is `/v2/apps`).
+        :param: params:
+            The URL query parameters as a dict.
         :param: endpoint:
             The URL endpoint to use. The default value is the endpoint this
             client was created with (`self.endpoint`) (example is
@@ -56,7 +59,8 @@ class JsonClient(object):
             Any other parameters that will be passed to `treq.request`, for
             example headers or parameters.
         """
-        url = ('%s%s' % (endpoint or self.endpoint, path)).encode('utf-8')
+        url = str(
+            URL(endpoint or self.endpoint).path(path).query_params(params))
 
         data = json.dumps(json_data) if json_data else None
         requester_kwargs = {
@@ -158,9 +162,10 @@ class MarathonClient(JsonClient):
         Post a new Marathon event subscription with the given callback URL.
         """
         d = self.request(
-            'POST', '/v2/eventSubscriptions?%s' % urlencode({
-                'callbackUrl': callback_url,
-            }))
+            'POST',
+            '/v2/eventSubscriptions',
+            {'callbackUrl': callback_url}
+        )
         return d.addCallback(lambda response: response.code == OK)
 
     def get_apps(self):
@@ -200,13 +205,20 @@ class ConsulClient(JsonClient):
             on an agent that cannot be reached.
         """
         super(ConsulClient, self).__init__(endpoint)
-        self.endpoint = endpoint
         self.enable_fallback = enable_fallback
 
-    def register_agent_service(self, agent_endpoint, registration):
+    def _get_agent_endpoint(self, agent_address):
         """
-        Register a Consul service at the given agent endpoint.
+        Use the default endpoint to construct the agent endpoint from an
+        address, i.e. use the same scheme and port but swap in the address.
         """
+        return str(URL(self.endpoint).host(agent_address))
+
+    def register_agent_service(self, agent_address, registration):
+        """
+        Register a Consul service at the given agent address.
+        """
+        agent_endpoint = self._get_agent_endpoint(agent_address)
         d = self.request('PUT', '/v1/agent/service/register',
                          endpoint=agent_endpoint, json_data=registration)
 
@@ -226,10 +238,11 @@ class ConsulClient(JsonClient):
             'PUT', '/v1/agent/service/register', json_data=registration,
             timeout=self.fallback_timeout)
 
-    def deregister_agent_service(self, agent_endpoint, service_id):
+    def deregister_agent_service(self, agent_address, service_id):
         """
-        Deregister a Consul service at the given agent endpoint.
+        Deregister a Consul service at the given agent address.
         """
+        agent_endpoint = self._get_agent_endpoint(agent_address)
         return self.request('PUT', '/v1/agent/service/deregister/%s' % (
             service_id,), endpoint=agent_endpoint)
 
@@ -237,8 +250,7 @@ class ConsulClient(JsonClient):
         """
         Put a key/value in Consul's k/v store.
         """
-        return self.request(
-            'PUT', '/v1/kv/%s' % (quote(key),), json_data=value)
+        return self.request('PUT', '/v1/kv/%s' % key, json_data=value)
 
     def get_kv_keys(self, keys_path, separator=None):
         """
@@ -254,8 +266,7 @@ class ConsulClient(JsonClient):
         params = {'keys': ''}
         if separator:
             params['separator'] = separator
-        return self.get_json(
-            '/v1/kv/%s?%s' % (quote(keys_path), urlencode(params),))
+        return self.get_json('/v1/kv/%s' % keys_path, params=params)
 
     def delete_kv_keys(self, key, recurse=False):
         """
@@ -266,8 +277,8 @@ class ConsulClient(JsonClient):
         :param: recurse:
             Whether or not to recursively delete all subpaths of the key.
         """
-        return self.request('DELETE', '/v1/kv/%s%s' % (
-            quote(key), '?recurse' if recurse else '',))
+        params = {'recurse': ''} if recurse else {}
+        return self.request('DELETE', '/v1/kv/%s' % key, params)
 
     def get_catalog_nodes(self):
         """
@@ -275,8 +286,9 @@ class ConsulClient(JsonClient):
         """
         return self.get_json('/v1/catalog/nodes')
 
-    def get_agent_services(self, agent_endpoint):
+    def get_agent_services(self, agent_address):
         """
-        Get the list of running services for the given agent endpoint.
+        Get the list of running services for the given agent address.
         """
+        agent_endpoint = self._get_agent_endpoint(agent_address)
         return self.get_json('/v1/agent/services', endpoint=agent_endpoint)

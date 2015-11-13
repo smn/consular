@@ -20,10 +20,6 @@ def get_app_name(app_id):
     return app_id.lstrip('/').replace('/', '-')
 
 
-def get_agent_endpoint(host):
-    return 'http://%s:8500' % (host,)
-
-
 @inlineCallbacks
 def handle_not_found_error(f, *args, **kwargs):
     """
@@ -334,14 +330,13 @@ class Consular(object):
                     'only supports a single port. Only the lowest port (%s) '
                     'will be used.' % (len(ports), app_id, port,))
 
-        agent_endpoint = get_agent_endpoint(host)
         log.msg('Registering %s at %s with %s at %s:%s.' % (
-            app_id, agent_endpoint, task_id, host, port))
+            app_id, host, task_id, host, port))
         registration = self._create_service_registration(app_id, task_id,
                                                          host, port)
 
         return self.consul_client.register_agent_service(
-            agent_endpoint, registration)
+            host, registration)
 
     def deregister_task_service(self, task_id, host):
         """
@@ -352,8 +347,7 @@ class Consular(object):
         :param str host:
             The host address of the machine the task is running on.
         """
-        return self.deregister_consul_service(
-            get_agent_endpoint(host), task_id)
+        return self.deregister_consul_service(host, task_id)
 
     def deregister_consul_service(self, agent_endpoint, service_id):
         """
@@ -590,8 +584,7 @@ class Consular(object):
     def purge_dead_services(self):
         nodes = yield self.consul_client.get_catalog_nodes()
         for node in nodes:
-            self.purge_dead_agent_services(
-                get_agent_endpoint(node['Address']))
+            self.purge_dead_agent_services(node['Address'])
 
     @inlineCallbacks
     def purge_dead_agent_services(self, agent_endpoint):
